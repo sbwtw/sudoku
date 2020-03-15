@@ -1,0 +1,9 @@
+
+language = "C++"
+include_guard = "__SUDOKU_RS_H_"
+
+[macro_expansion]
+bitflags = true
+
+[enum]
+enum_class = false
