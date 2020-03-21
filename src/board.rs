@@ -7,7 +7,6 @@ use std::os::raw::c_void;
 use std::ptr::null_mut;
 use rand::Rng;
 use bitflags::bitflags;
-use bitflags::_core::ptr::null;
 
 bitflags! {
     #[repr(C)]
@@ -69,16 +68,22 @@ impl Board {
         self.callback_ptr = ptr;
     }
 
-    fn emit_update(&self, row: u32, column: u32) {
+    fn emit_update_cell(&self, row: u32, column: u32) {
         if let Some(cb) = self.update_callback {
             cb(self.callback_ptr, row, column);
+        }
+    }
+
+    fn emit_update_index(&self, index: usize) {
+        if let Some(cb) = self.update_callback {
+            cb(self.callback_ptr, (index / 9) as u32, (index % 9) as u32);
         }
     }
 
     fn emit_update_all(&self) {
         for i in 0..9 {
             for j in 0..9 {
-                self.emit_update(i, j);
+                self.emit_update_cell(i, j);
             }
         }
     }
@@ -146,7 +151,6 @@ impl Board {
         }
     }
 
-    #[export_name = "sudoku_initialize"]
     pub extern fn initialize(&mut self) {
         // reset
         for x in &mut self.numbers {
@@ -262,7 +266,6 @@ impl Board {
             }
 
             // all failed, rollback
-            self.numbers[curr].selected = None;
             rollback = true;
             current -= 1;
         }
@@ -301,7 +304,55 @@ impl Board {
     }
 
     pub fn set(&mut self, row: usize, column: usize, val: u8) {
-        self.numbers[row * 9 + column].selected = Some(val);
+        let cell = self.cell_mut(row, column);
+
+        cell.selected = Some(val);
+        cell.states |= CellStates::FILLED;
+
+        // remove_candidates
+        for idx in self.effect_cell_indexes(row, column).iter() {
+            self.numbers[*idx].candidate.remove(&val);
+            self.emit_update_index(*idx);
+        }
+    }
+
+    fn effect_cell_indexes(&self, row: usize, column: usize) -> [usize; 24] {
+        let mut indexes = [0; 24];
+        let mut index = 0;
+
+        // same row
+        for i in 0..=8 {
+            if i != column {
+                indexes[index] = row * 9 + i;
+                index += 1;
+            }
+        }
+
+        // same column
+        for i in 0..=8 {
+            if i != row {
+                indexes[index] = i * 9 + column;
+                index += 1;
+            }
+        }
+
+        // same block
+        let br = (row / 3) * 3;
+        let bc = (column / 3) * 3;
+        for r in 0..=2 {
+            for c in 0..=2 {
+                let cr = br + r;
+                let cc = bc + c;
+
+
+                if cr != row || cc != column {
+                    indexes[index] = cr * 9 + cc;
+                    index += 1;
+                }
+            }
+        }
+
+        indexes
     }
 
     fn row(&self, row: usize) -> Vec<&Cell> {
@@ -337,6 +388,10 @@ impl Board {
         debug_assert!(row < 9 && column < 9);
 
         &self.numbers[row * 9 + column]
+    }
+
+    pub fn cell_mut(&mut self, row: usize, column: usize) -> &mut Cell {
+        &mut self.numbers[row * 9 + column]
     }
 }
 
@@ -451,5 +506,24 @@ mod tests {
         assert_eq!(block[5].selected, Some(6));
         assert_eq!(block[7].selected, Some(8));
         assert_eq!(block[8].selected, Some(9));
+    }
+
+    #[test]
+    fn test_effect_cells()
+    {
+        let board = Board::empty();
+        let indexes = board.effect_cell_indexes(6, 3);
+        assert!(!indexes.contains(&0));
+        assert!(!indexes.contains(&53));
+        assert!(indexes.contains(&54));
+        assert!(indexes.contains(&62));
+        assert!(!indexes.contains(&63));
+        assert!(!indexes.contains(&65));
+        assert!(indexes.contains(&66));
+        assert!(indexes.contains(&67));
+        assert!(indexes.contains(&68));
+        assert!(!indexes.contains(&69));
+        assert!(indexes.contains(&77));
+        assert!(!indexes.contains(&78));
     }
 }
