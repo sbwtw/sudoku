@@ -2,7 +2,6 @@
 use rand;
 
 use std::fmt;
-use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use rand::Rng;
@@ -30,18 +29,69 @@ bitflags! {
 
 #[derive(Clone)]
 pub struct Cell {
-    pub selected: Option<u8>,
-    pub candidate: HashSet<u8>,
-    pub states: CellStates,
+    selected: Option<u8>,
+    candidate: [i8; 10],
+    states: CellStates,
 }
 
 impl Cell {
     pub fn new() -> Self {
         Self {
             selected: None,
-            candidate: HashSet::new(),
+            candidate: [1i8; 10],
             states: CellStates::NONE,
         }
+    }
+
+    pub fn states(&self) -> CellStates {
+        self.states
+    }
+
+    pub fn selected(&self) -> Option<u8> {
+        self.selected
+    }
+
+    fn has_candidate(&self, candidate: u8) -> bool {
+        debug_assert!(candidate > 0 && candidate <= 9);
+
+        self.candidate[candidate as usize] > 0
+    }
+
+    fn best_candidates(&self) -> Vec<u8> {
+        let mut r = vec![];
+        let low = self.selected.unwrap_or(1) as usize;
+
+        for i in low..=9 {
+            if self.candidate[i] > 0 {
+                r.push(i as u8);
+            }
+        }
+
+        r
+    }
+
+    fn add_candidate(&mut self, candidate: u8) {
+        self.candidate[candidate as usize] += 1;
+    }
+
+    fn remove_candidate(&mut self, candidate: u8) {
+        self.candidate[candidate as usize] -= 1;
+    }
+
+    fn reset_candidate(&mut self) {
+        self.candidate = [1i8; 10];
+    }
+
+    pub fn candidate_u32(&self) -> u32 {
+        let mut flags: u32 = 0;
+
+        for i in 1..=9 {
+            if self.candidate[i] > 0 {
+                flags |= 1 << i;
+            }
+        }
+
+        flags
     }
 }
 
@@ -88,23 +138,26 @@ impl Board {
         }
     }
 
-    pub extern fn generate(&mut self) {
+    pub fn generate(&mut self) {
         // step 1. generate correct result
         self.initialize();
-        while !self.can_resolve() {
+        println!("{}", *self);
+        //self.try_resolve();
+        while !self.try_resolve() {
             self.initialize();
+            println!("Can't resolve, generate new board: \n{}", *self);
         }
 
         // step 2. randomize
-        self.randomize();
+        //self.randomize();
 
         // step 3. remove some block & ensure can be resolve
-        let backup = self.numbers.clone();
-        self.random_remove(55);
+        //let backup = self.numbers.clone();
+        //self.random_remove(10);
 
         // step 4. fill candidate & cleanup
-        self.reset_candidate();
-        self.init_selected_cells();
+        //self.reset_candidate();
+        //self.init_selected_cells();
 
         // step 5. emit update all
         self.emit_update_all();
@@ -151,9 +204,10 @@ impl Board {
         }
     }
 
-    pub extern fn initialize(&mut self) {
+    pub fn initialize(&mut self) {
         // reset
         for x in &mut self.numbers {
+            x.reset_candidate();
             x.selected = None;
         }
 
@@ -165,49 +219,29 @@ impl Board {
                 continue;
             }
 
-            self.numbers[pos].selected = Some(rng.gen_range(1, 10));
-            if !self.check(pos / 9, pos % 9) {
-                self.numbers[pos].selected = None;
-                continue;
+            let candidate = rng.gen_range(1, 10);
+            if self.numbers[pos].has_candidate(candidate) {
+                self.set(pos / 9, pos % 9, Some(candidate));
+                self.cell_mut(pos / 9, pos % 9).states |= CellStates::PRE_FILLED;
+                generated += 1;
             }
-
-            generated += 1;
-        }
-    }
-
-    // remove candidate in pos
-    fn remove_candidate(&mut self, row: usize, column: usize, candidate: u8) {
-        debug_assert!(row < 9 && column < 9);
-
-        let block_row = row / 3;
-        let block_column = column / 3;
-
-        for idx in 0..9 {
-            // row
-            self.numbers[row * 9 + idx].candidate.remove(&candidate);
-            // column
-            self.numbers[idx * 9 + column].candidate.remove(&candidate);
-            // block
-            let new_row = block_row * 3 + idx / 3;
-            let new_column = block_column * 3 + idx % 3;
-            self.numbers[new_row * 9 + new_column].candidate.remove(&candidate);
         }
     }
 
     // remove all selected candidate items
     fn init_selected_cells(&mut self) {
         let selected: Vec<(usize, u8)> = self.numbers.iter().enumerate()
-            .filter(|(idx, cell)| cell.selected.is_some())
+            .filter(|(_, cell)| cell.selected.is_some())
             .map(|(idx, cell)| (idx, cell.selected.unwrap()))
             .collect();
 
         for (idx, select) in selected {
-            self.remove_candidate(idx / 9, idx % 9, select);
+            self.cell_mut(idx / 9, idx % 9).remove_candidate(select);
         }
 
         for cell in self.numbers.iter_mut() {
             if cell.selected.is_some() {
-                cell.candidate.clear();
+                cell.reset_candidate();
                 cell.states |= CellStates::PRE_FILLED;
             }
         }
@@ -215,62 +249,50 @@ impl Board {
 
     fn reset_candidate(&mut self) {
         for cell in self.numbers.iter_mut() {
-            for i in 1..10 {
-                cell.candidate.insert(i);
-            }
+            cell.reset_candidate();
         }
     }
 
-    fn can_resolve2(&mut self) -> bool {
-        self.init_selected_cells();
-
-        true
-    }
-
-    fn next_unique_candidate(&self) -> Option<(usize, u8)> {
-        self.numbers.iter().enumerate()
-            .find(|(_, cell)| cell.candidate.len() == 1)
-            .map(|(idx, cell)| (idx, *cell.candidate.iter().next().unwrap()))
-    }
-
-    fn can_resolve(&mut self) -> bool {
-        let filled: Vec<usize> = self.numbers.iter()
+    fn try_resolve(&mut self) -> bool {
+        let filled: Vec<isize> = self.numbers.iter()
             .enumerate().filter(|(_, cell)| {
             cell.selected.is_some()
-        }).map(|(idx, _)| idx).collect();
+        }).map(|(idx, _)| idx as isize).collect();
 
         let mut current: isize = 0;
         let mut rollback = false;
         'fill: while current != 81 && current >= 0 {
-            let curr = current as usize;
-            if filled.contains(&curr) {
+            if filled.contains(&current) {
                 if rollback {
                     current -= 1;
                 } else {
                     current += 1;
                 }
-                continue;
+                continue 'fill;
             }
 
             rollback = false;
+            let cell = &self.numbers[current as usize];
+            let available_candidates = cell.best_candidates();
 
-            let next_try = self.numbers[curr].selected.unwrap_or(0) + 1;
-
-            // try number
-            for i in next_try..10 {
-                self.numbers[curr].selected = Some(i);
-                if self.check(curr / 9, curr % 9) {
+            //println!("try to fill cell {} with candidates {:?}", current, available_candidates);
+            for try_num in available_candidates.iter() {
+                //println!("write {} to cell {}", try_num, current);
+                self.set(current as usize / 9, current as usize % 9, Some(*try_num));
+                if self.check(current as usize / 9, current as usize % 9) {
                     current += 1;
                     continue 'fill;
                 }
             }
 
+            //println!("rollback cell {}", current);
             // all failed, rollback
+            self.set(current as usize / 9, current as usize % 9, None);
             rollback = true;
             current -= 1;
         }
 
-        true
+        current == 81
     }
 
     pub fn check(&self, row: usize, column: usize) -> bool {
@@ -279,45 +301,43 @@ impl Board {
             return true;
         }
 
-        // check row
-        if self.row(row).iter()
-            .filter(|y| y.selected == x.selected)
-            .count() > 1 {
-            return false;
-        }
-
-        // check column
-        if self.column(column).iter()
-            .filter(|y| y.selected == x.selected)
-            .count() > 1 {
-            return false;
-        }
-
-        // check block
-        if self.block(row, column).iter()
-            .filter(|y| y.selected == x.selected)
-            .count() > 1 {
-            return false;
+        for idx in self.effect_cell_indexes(row, column).iter() {
+            if self.numbers[*idx].selected == x.selected {
+                return false;
+            }
         }
 
         true
     }
 
-    pub fn set(&mut self, row: usize, column: usize, val: u8) {
-        let cell = self.cell_mut(row, column);
+    pub fn set(&mut self, row: usize, column: usize, val: Option<u8>) {
+        if let Some(v) = self.cell(row, column).selected {
+            self.cell_mut(row, column).add_candidate(v);
 
-        cell.selected = Some(val);
-        cell.states |= CellStates::FILLED;
-
-        // remove_candidates
-        for idx in self.effect_cell_indexes(row, column).iter() {
-            self.numbers[*idx].candidate.remove(&val);
-            self.emit_update_index(*idx);
+            // add effect candidates
+            for idx in self.effect_cell_indexes(row, column).iter() {
+                self.numbers[*idx].add_candidate(v);
+            }
         }
+
+        if let Some(v) = val {
+            let cell = self.cell_mut(row, column);
+            cell.states |= CellStates::FILLED;
+            cell.remove_candidate(v);
+
+            // remove effect candidates
+            for idx in self.effect_cell_indexes(row, column).iter() {
+                self.numbers[*idx].remove_candidate(v);
+            }
+        } else {
+            self.cell_mut(row, column).states &= !CellStates::FILLED;
+        }
+
+        self.cell_mut(row, column).selected = val;
     }
 
-    fn effect_cell_indexes(&self, row: usize, column: usize) -> [usize; 24] {
-        let mut indexes = [0; 24];
+    fn effect_cell_indexes(&self, row: usize, column: usize) -> [usize; 20] {
+        let mut indexes = [0; 20];
         let mut index = 0;
 
         // same row
@@ -345,43 +365,15 @@ impl Board {
                 let cc = bc + c;
 
 
-                if cr != row || cc != column {
+                if cr != row && cc != column {
                     indexes[index] = cr * 9 + cc;
                     index += 1;
                 }
             }
         }
 
+        debug_assert!(20 == index);
         indexes
-    }
-
-    fn row(&self, row: usize) -> Vec<&Cell> {
-        debug_assert!(row < 9);
-
-        (0..9).map(|x|
-            &self.numbers[row * 9 + x])
-            .collect()
-    }
-
-    fn column(&self, column: usize) -> Vec<&Cell> {
-        debug_assert!(column < 9);
-
-        (0..9).map(|x|
-            &self.numbers[column + x * 9])
-            .collect()
-    }
-
-    pub fn block(&self, row: usize, column: usize) -> Vec<&Cell> {
-        let mut r = vec![];
-        let br = row / 3;
-        let bc = column / 3;
-        for idx in 0..9 {
-            let new_row = br * 3 + idx / 3;
-            let new_column = bc * 3 + idx % 3;
-            r.push(&self.numbers[new_row * 9 + new_column]);
-        }
-
-        r
     }
 
     pub fn cell(&self, row: usize, column: usize) -> &Cell {
@@ -428,48 +420,32 @@ mod tests {
     fn test_remove_candidate()
     {
         let mut board = Board::empty();
-        board.reset_candidate();
-        assert!(!board.cell(0, 0).candidate.contains(&0));
-        assert!(board.cell(0, 0).candidate.contains(&1));
-        board.remove_candidate(0, 0, 1);
-        assert!(!board.cell(0, 0).candidate.contains(&1));
-        assert!(!board.cell(0, 8).candidate.contains(&1));
-        assert!(!board.cell(1, 0).candidate.contains(&1));
-        assert!(!board.cell(2, 0).candidate.contains(&1));
-        assert!(!board.cell(1, 1).candidate.contains(&1));
-        assert!(!board.cell(1, 2).candidate.contains(&1));
-        assert!(!board.cell(2, 2).candidate.contains(&1));
-        assert!(board.cell(3, 3).candidate.contains(&1));
-        assert!(board.cell(3, 1).candidate.contains(&1));
-        assert!(board.cell(1, 3).candidate.contains(&1));
-        assert!(board.cell(1, 8).candidate.contains(&1));
-        assert!(board.cell(8, 1).candidate.contains(&1));
+        assert!(board.cell(0, 0).has_candidate(1));
+        assert!(board.cell(0, 0).has_candidate(5));
+        assert!(board.cell(0, 0).has_candidate(9));
 
-        board.remove_candidate(4, 8, 4);
-        assert!(!board.cell(4, 0).candidate.contains(&4));
+        board.set(0, 0, Some(1));
+        assert!(!board.cell(0, 0).has_candidate(1));
+        assert!(!board.cell(0, 8).has_candidate(1));
+        assert!(!board.cell(8, 0).has_candidate(1));
+        assert!(!board.cell(2, 2).has_candidate(1));
+        assert!(board.cell(2, 2).has_candidate(2));
+
+        board.set(1, 1, Some(2));
+        assert!(!board.cell(2, 2).has_candidate(2));
+        assert!(board.cell(4, 4).has_candidate(2));
     }
 
     #[test]
-    fn test_get_block()
+    fn test_check()
     {
         let mut board = Board::empty();
-        board.set(3, 3, 1);
-        board.set(3, 4, 2);
-        board.set(3, 5, 3);
-        board.set(4, 3, 4);
-        board.set(4, 4, 5);
-        board.set(4, 5, 6);
-        board.set(5, 3, 7);
-        board.set(5, 4, 8);
-        board.set(5, 5, 9);
+        board.set(2, 3, Some(1));
+        assert!(board.check(2, 3));
 
-        let block = board.block(4, 4);
-        assert_eq!(block[0].selected, Some(1));
-        assert_eq!(block[1].selected, Some(2));
-        assert_eq!(block[4].selected, Some(5));
-        assert_eq!(block[5].selected, Some(6));
-        assert_eq!(block[7].selected, Some(8));
-        assert_eq!(block[8].selected, Some(9));
+        board.set(1, 5, Some(1));
+        assert!(!board.check(2, 3));
+        assert!(!board.check(1, 5));
     }
 
     #[test]
@@ -477,35 +453,12 @@ mod tests {
     {
         let mut board = Board::empty();
         board.initialize();
-        while !board.can_resolve() {
+        while !board.try_resolve() {
             board.initialize();
         }
 
         board.randomize();
-        assert!(board.can_resolve());
-    }
-
-    #[test]
-    fn test_last_block()
-    {
-        let mut board = Board::empty();
-        board.set(6, 6, 1);
-        board.set(6, 7, 2);
-        board.set(6, 8, 3);
-        board.set(7, 6, 4);
-        board.set(7, 7, 5);
-        board.set(7, 8, 6);
-        board.set(8, 6, 7);
-        board.set(8, 7, 8);
-        board.set(8, 8, 9);
-
-        let block = board.block(8, 8);
-        assert_eq!(block[0].selected, Some(1));
-        assert_eq!(block[1].selected, Some(2));
-        assert_eq!(block[4].selected, Some(5));
-        assert_eq!(block[5].selected, Some(6));
-        assert_eq!(block[7].selected, Some(8));
-        assert_eq!(block[8].selected, Some(9));
+        assert!(board.try_resolve());
     }
 
     #[test]
@@ -525,5 +478,34 @@ mod tests {
         assert!(!indexes.contains(&69));
         assert!(indexes.contains(&77));
         assert!(!indexes.contains(&78));
+
+        let indexes = board.effect_cell_indexes(0, 0);
+        assert!(!indexes.contains(&0));
+        assert!(indexes.contains(&1));
+        assert!(indexes.contains(&2));
+        assert!(indexes.contains(&3));
+        assert!(indexes.contains(&4));
+        assert!(indexes.contains(&5));
+        assert!(indexes.contains(&6));
+        assert!(indexes.contains(&7));
+        assert!(indexes.contains(&8));
+
+        assert!(indexes.contains(&9));
+        assert!(indexes.contains(&18));
+        assert!(indexes.contains(&27));
+        assert!(indexes.contains(&36));
+        assert!(indexes.contains(&45));
+        assert!(indexes.contains(&54));
+        assert!(indexes.contains(&63));
+        assert!(indexes.contains(&72));
+
+        assert!(indexes.contains(&10));
+        assert!(indexes.contains(&11));
+        assert!(indexes.contains(&19));
+        assert!(indexes.contains(&20));
+
+        let indexes = board.effect_cell_indexes(2, 3);
+        assert!(indexes.contains(&3));
+        assert!(indexes.contains(&23));
     }
 }

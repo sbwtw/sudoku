@@ -23,7 +23,7 @@ pub unsafe extern fn sudoku_free(board: *mut Board) {
 pub extern fn sudoku_get_number(board: *mut Board, row: u32, column: u32) -> u8 {
     let board = unsafe { board.as_ref().unwrap() };
 
-    board.cell(row as usize, column as usize).selected.unwrap_or(0)
+    board.cell(row as usize, column as usize).selected().unwrap_or(0)
 }
 
 #[no_mangle]
@@ -51,26 +51,20 @@ pub extern fn sudoku_set_update_callback(board: *mut Board, ptr: *mut c_void, cb
 #[no_mangle]
 pub extern fn sudoku_get_candidate(board: *mut Board, row: u32, column: u32) -> u32 {
     let board = unsafe { board.as_ref().unwrap() };
-    let mut flags: u32 = 0;
 
-    for candidate in board.cell(row as usize, column as usize)
-        .candidate.iter() {
-        flags |= (1 as u32) << *candidate as u32;
-    }
-
-    flags
+    board.cell(row as usize, column as usize).candidate_u32()
 }
 
 #[no_mangle]
 pub extern fn sudoku_get_cell_state(board: *mut Board, row: u32, column: u32) -> CellStates {
     let board = unsafe { board.as_ref().unwrap() };
 
-    board.cell(row as usize, column as usize).states
+    board.cell(row as usize, column as usize).states()
 }
 
 #[no_mangle]
 pub extern fn sudoku_set_cell(board: *mut Board, row: u32, column: u32, val: u8) {
     let board = unsafe { board.as_mut().unwrap() };
 
-    board.set(row as usize, column as usize, val);
+    board.set(row as usize, column as usize, Some(val));
 }
