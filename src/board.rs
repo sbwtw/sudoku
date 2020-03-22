@@ -59,7 +59,7 @@ impl Cell {
 
     fn best_candidates(&self) -> Vec<u8> {
         let mut r = vec![];
-        let low = self.selected.unwrap_or(1) as usize;
+        let low = self.selected.unwrap_or(0) as usize + 1;
 
         for i in low..=9 {
             if self.candidate[i] > 0 {
@@ -74,8 +74,21 @@ impl Cell {
         self.candidate[candidate as usize] += 1;
     }
 
-    fn remove_candidate(&mut self, candidate: u8) {
+    // return true if error occured
+    fn remove_candidate(&mut self, candidate: u8) -> bool {
         self.candidate[candidate as usize] -= 1;
+
+        if self.selected.is_some() {
+            return false;
+        }
+
+        for i in 1..=9 {
+            if self.candidate[i] > 0 {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn reset_candidate(&mut self) {
@@ -142,14 +155,14 @@ impl Board {
         // step 1. generate correct result
         self.initialize();
         println!("{}", *self);
-        //self.try_resolve();
-        while !self.try_resolve() {
-            self.initialize();
-            println!("Can't resolve, generate new board: \n{}", *self);
-        }
+        self.try_resolve();
+        //while !self.try_resolve() {
+            //self.initialize();
+            //println!("Can't resolve, generate new board: \n{}", *self);
+        //}
 
         // step 2. randomize
-        //self.randomize();
+        self.randomize();
 
         // step 3. remove some block & ensure can be resolve
         //let backup = self.numbers.clone();
@@ -209,6 +222,7 @@ impl Board {
         for x in &mut self.numbers {
             x.reset_candidate();
             x.selected = None;
+            x.states = CellStates::NONE;
         }
 
         let mut rng = rand::thread_rng();
@@ -222,7 +236,7 @@ impl Board {
             let candidate = rng.gen_range(1, 10);
             if self.numbers[pos].has_candidate(candidate) {
                 self.set(pos / 9, pos % 9, Some(candidate));
-                self.cell_mut(pos / 9, pos % 9).states |= CellStates::PRE_FILLED;
+                self.numbers[pos].states |= CellStates::PRE_FILLED;
                 generated += 1;
             }
         }
@@ -261,6 +275,7 @@ impl Board {
 
         let mut current: isize = 0;
         let mut rollback = false;
+        let mut try_times = 0;
         'fill: while current != 81 && current >= 0 {
             if filled.contains(&current) {
                 if rollback {
@@ -271,6 +286,9 @@ impl Board {
                 continue 'fill;
             }
 
+            if try_times > 100000 { return false; }
+            try_times += 1;
+
             rollback = false;
             let cell = &self.numbers[current as usize];
             let available_candidates = cell.best_candidates();
@@ -278,8 +296,7 @@ impl Board {
             //println!("try to fill cell {} with candidates {:?}", current, available_candidates);
             for try_num in available_candidates.iter() {
                 //println!("write {} to cell {}", try_num, current);
-                self.set(current as usize / 9, current as usize % 9, Some(*try_num));
-                if self.check(current as usize / 9, current as usize % 9) {
+                if !self.set(current as usize / 9, current as usize % 9, Some(*try_num)) {
                     current += 1;
                     continue 'fill;
                 }
@@ -310,7 +327,7 @@ impl Board {
         true
     }
 
-    pub fn set(&mut self, row: usize, column: usize, val: Option<u8>) {
+    pub fn set(&mut self, row: usize, column: usize, val: Option<u8>) -> bool {
         if let Some(v) = self.cell(row, column).selected {
             self.cell_mut(row, column).add_candidate(v);
 
@@ -320,20 +337,29 @@ impl Board {
             }
         }
 
+        self.cell_mut(row, column).selected = val;
+
+        let mut error_occured = false;
         if let Some(v) = val {
             let cell = self.cell_mut(row, column);
             cell.states |= CellStates::FILLED;
-            cell.remove_candidate(v);
+            if cell.remove_candidate(v) {
+                //println!("No candidate on cell {} {}", row, column);
+                error_occured = true;
+            }
 
             // remove effect candidates
             for idx in self.effect_cell_indexes(row, column).iter() {
-                self.numbers[*idx].remove_candidate(v);
+                if self.numbers[*idx].remove_candidate(v) {
+                    error_occured = true;
+                    //println!("No candidate on cell {} {}", row, column);
+                }
             }
         } else {
             self.cell_mut(row, column).states &= !CellStates::FILLED;
         }
 
-        self.cell_mut(row, column).selected = val;
+        error_occured
     }
 
     fn effect_cell_indexes(&self, row: usize, column: usize) -> [usize; 20] {
