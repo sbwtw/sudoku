@@ -7,3 +7,6 @@ bitflags = true
 
 [enum]
 enum_class = false
+
+[struct]
+derive_eq = true
