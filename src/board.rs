@@ -1,126 +1,11 @@
-
 use rand;
 
 use std::fmt;
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use rand::Rng;
-use bitflags::bitflags;
 
-bitflags! {
-    #[repr(C)]
-    pub struct CellStates : u32 {
-        // None
-        const NONE          = 0b00000000;
-        // 已经有数据的格子
-        const FILLED        = 0b00000001;
-        // 选中的格子
-        const SELECTED      = 0b00000010;
-        // 正在检查的数字所在的格子
-        const CHECKING      = 0b00000100;
-        // 高亮提示格子
-        const HIGH_LIGHT    = 0b00001000;
-        // 冲突格子
-        const CONFLICT      = 0b00010000;
-        // 预先定义的格子
-        const PRE_FILLED    = 0b00100001;
-    }
-}
-
-#[derive(Clone)]
-pub struct Cell {
-    selected: Option<u8>,
-    candidate: [i8; 10],
-    states: CellStates,
-}
-
-impl Cell {
-    pub fn new() -> Self {
-        Self {
-            selected: None,
-            candidate: [1i8; 10],
-            states: CellStates::NONE,
-        }
-    }
-
-    pub fn states(&self) -> CellStates {
-        self.states
-    }
-
-    fn set_states(&mut self, states: CellStates) {
-        self.states = states;
-
-        if (states & CellStates::PRE_FILLED) == CellStates::PRE_FILLED {
-            self.candidate = [0i8; 10];
-        }
-    }
-
-    pub fn selected(&self) -> Option<u8> {
-        self.selected
-    }
-
-    fn set_select(&mut self, val: Option<u8>) {
-        self.selected = val;
-    }
-
-    fn has_candidate(&self, candidate: u8) -> bool {
-        debug_assert!(candidate > 0 && candidate <= 9);
-
-        self.candidate[candidate as usize] > 0
-    }
-
-    fn best_candidates(&self) -> Vec<u8> {
-        let mut r = vec![];
-        let low = self.selected.unwrap_or(0) as usize + 1;
-
-        for i in low..=9 {
-            if self.candidate[i] > 0 {
-                r.push(i as u8);
-            }
-        }
-
-        r
-    }
-
-    fn add_candidate(&mut self, candidate: u8) {
-        self.candidate[candidate as usize] += 1;
-
-        debug_assert!(self.candidate[candidate as usize] <= 1);
-    }
-
-    // return true if error occured
-    fn remove_candidate(&mut self, candidate: u8) -> bool {
-        self.candidate[candidate as usize] -= 1;
-
-        if self.selected.is_some() {
-            return false;
-        }
-
-        for i in 1..=9 {
-            if self.candidate[i] > 0 {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn reset_candidate(&mut self) {
-        self.candidate = [1i8; 10];
-    }
-
-    pub fn candidate_u32(&self) -> u32 {
-        let mut flags: u32 = 0;
-
-        for i in 1..=9 {
-            if self.candidate[i] > 0 {
-                flags |= 1 << i;
-            }
-        }
-
-        flags
-    }
-}
+use crate::cell::*;
 
 pub struct Board {
     numbers: Vec<Cell>,
@@ -150,6 +35,12 @@ impl Board {
             for idx in self.effect_cell_indexes(row, column).iter() {
                 cb(self.callback_ptr, *idx as u32 / 9, *idx as u32 % 9);
             }
+        }
+    }
+
+    fn emit_update_cell(&self, row: usize, column: usize) {
+        if let Some(cb) = self.update_callback {
+            cb(self.callback_ptr, row as u32, column as u32);
         }
     }
 
@@ -201,8 +92,8 @@ impl Board {
         let mut rng = rand::thread_rng();
         while removed != count {
             let pick = rng.gen_range(0, 81);
-            if self.numbers[pick].selected.is_some() {
-                self.numbers[pick].selected = None;
+            if self.numbers[pick].selected().is_some() {
+                self.numbers[pick].set_select(None);
                 removed += 1;
             }
         }
@@ -241,22 +132,23 @@ impl Board {
         // reset
         for x in &mut self.numbers {
             x.reset_candidate();
-            x.selected = None;
-            x.states = CellStates::NONE;
+            x.set_select(None);
+            x.set_states(CellStates::NONE);
         }
 
         let mut rng = rand::thread_rng();
         let mut generated = 0;
         while generated != 11 {
             let pos = rng.gen_range(0, 81);
-            if self.numbers[pos].selected.is_some() {
+            let cell = self.cell(pos / 9, pos % 9).clone();
+            if cell.selected().is_some() {
                 continue;
             }
 
             let candidate = rng.gen_range(1, 10);
-            if self.numbers[pos].has_candidate(candidate) {
+            if cell.has_candidate(candidate) {
                 self.set(pos / 9, pos % 9, Some(candidate));
-                self.numbers[pos].states |= CellStates::PRE_FILLED;
+                self.cell_mut(pos / 9, pos % 9).set_states(cell.states() | CellStates::PRE_FILLED);
                 generated += 1;
             }
         }
@@ -265,8 +157,8 @@ impl Board {
     // remove all selected candidate items
     fn init_selected_cells(&mut self) {
         let selected: Vec<(usize, u8)> = self.numbers.iter().enumerate()
-            .filter(|(_, cell)| cell.selected.is_some())
-            .map(|(idx, cell)| (idx, cell.selected.unwrap()))
+            .filter(|(_, cell)| cell.selected().is_some())
+            .map(|(idx, cell)| (idx, cell.selected().unwrap()))
             .collect();
 
         for (idx, select) in selected {
@@ -274,9 +166,9 @@ impl Board {
         }
 
         for cell in self.numbers.iter_mut() {
-            if cell.selected.is_some() {
+            if cell.selected().is_some() {
                 cell.reset_candidate();
-                cell.states |= CellStates::PRE_FILLED;
+                cell.set_states(cell.states() | CellStates::PRE_FILLED);
             }
         }
     }
@@ -284,7 +176,7 @@ impl Board {
     fn reset_init_state(&mut self) {
         let pre_filled: Vec<usize> = self.numbers.iter()
             .enumerate().filter(|(_, cell)| {
-            cell.states != CellStates::PRE_FILLED
+            cell.states() != CellStates::PRE_FILLED
         }).map(|(idx, _)| idx).collect();
 
         for idx in pre_filled {
@@ -295,7 +187,7 @@ impl Board {
     fn try_resolve(&mut self) -> bool {
         let filled: Vec<isize> = self.numbers.iter()
             .enumerate().filter(|(_, cell)| {
-            cell.selected.is_some()
+            cell.selected().is_some()
         }).map(|(idx, _)| idx as isize).collect();
 
         let mut current: isize = 0;
@@ -311,7 +203,7 @@ impl Board {
                 continue 'fill;
             }
 
-            if try_times > 100000 { return false; }
+            if try_times > 10000 { return false; }
             try_times += 1;
 
             rollback = false;
@@ -339,12 +231,12 @@ impl Board {
 
     pub fn check(&self, row: usize, column: usize) -> bool {
         let x = self.cell(row, column);
-        if x.selected.is_none() {
+        if x.selected().is_none() {
             return true;
         }
 
         for idx in self.effect_cell_indexes(row, column).iter() {
-            if self.numbers[*idx].selected == x.selected {
+            if self.numbers[*idx].selected() == x.selected() {
                 return false;
             }
         }
@@ -353,7 +245,7 @@ impl Board {
     }
 
     pub fn set(&mut self, row: usize, column: usize, val: Option<u8>) -> bool {
-        if let Some(v) = self.cell(row, column).selected {
+        if let Some(v) = self.cell(row, column).selected() {
             self.cell_mut(row, column).add_candidate(v);
 
             // add effect candidates
@@ -362,12 +254,12 @@ impl Board {
             }
         }
 
-        self.cell_mut(row, column).selected = val;
+        self.cell_mut(row, column).set_select(val);
 
         let mut error_occured = false;
         if let Some(v) = val {
             let cell = self.cell_mut(row, column);
-            cell.states |= CellStates::FILLED;
+            cell.set_states(cell.states() | CellStates::FILLED);
             if cell.remove_candidate(v) {
                 //println!("No candidate on cell {} {}", row, column);
                 error_occured = true;
@@ -381,10 +273,12 @@ impl Board {
                 }
             }
         } else {
-            self.cell_mut(row, column).states &= !CellStates::FILLED;
+            let cell = self.cell_mut(row, column);
+            cell.set_states(cell.states() & !CellStates::FILLED);
         }
 
         self.emit_update_effect_cell(row, column);
+        self.emit_update_cell(row, column);
 
         error_occured
     }
@@ -449,7 +343,7 @@ impl fmt::Display for Board {
             write!(f, "|")?;
             for column in 0..9 {
                 let index = row * 9 + column;
-                let s = self.numbers[index].selected
+                let s = self.numbers[index].selected()
                     .map(|x| x.to_string())
                     .unwrap_or(" ".to_string());
                 write!(f, "{}", s)?;
@@ -469,6 +363,8 @@ impl fmt::Display for Board {
 mod tests {
     use crate::board::Board;
     use crate::board::CellStates;
+    use std::sync::Arc;
+    use std::os::raw::c_void;
 
     #[test]
     fn test_remove_candidate()
@@ -570,15 +466,19 @@ mod tests {
 
         let mut pre_filled = 0;
         for i in 0..=80 {
-            if board.numbers[i].selected.is_some() {
+            if board.numbers[i].selected().is_some() {
                 pre_filled += 1;
-                assert!(board.numbers[i].states == CellStates::PRE_FILLED);
+                assert!(board.numbers[i].states() == CellStates::PRE_FILLED);
             }
         }
         assert!(pre_filled == 11);
 
         let mut board = Board::empty();
-        board.generate();
+        board.initialize();
+        while !board.try_resolve() {
+            board.initialize();
+        }
+
         let mut pre_filled = 0;
         let mut filled = 0;
         for i in 0..=80 {
@@ -589,7 +489,7 @@ mod tests {
                 filled += 1;
             }
         }
-        assert!(pre_filled == 11);
-        assert!(filled == 70);
+        assert_eq!(11, pre_filled);
+        assert_eq!(70, filled);
     }
 }

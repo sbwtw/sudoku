@@ -1,8 +1,9 @@
 
 mod board;
+mod cell;
 
 pub use board::Board;
-pub use board::CellStates;
+pub use cell::CellStates;
 use std::os::raw::c_void;
 
 #[no_mangle]
