@@ -122,5 +122,9 @@ impl Cell {
     pub fn is_prefilled(&self) -> bool {
         (self.states & CellStates::PRE_FILLED) == CellStates::PRE_FILLED
     }
+
+    pub fn is_highlighted(&self) -> bool {
+        (self.states & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT
+    }
 }
 

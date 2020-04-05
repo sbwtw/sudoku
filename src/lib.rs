@@ -69,3 +69,24 @@ pub extern fn sudoku_set_cell(board: *mut Board, row: u32, column: u32, val: u8)
 
     board.set(row as usize, column as usize, Some(val));
 }
+
+#[no_mangle]
+pub extern fn sudoku_clear_cell(board: *mut Board, row: u32, column: u32) {
+    let board = unsafe { board.as_mut().unwrap() };
+
+    board.set(row as usize, column as usize, None);
+}
+
+#[no_mangle]
+pub extern fn sudoku_set_highlight(board: *mut Board, highlight: u8) {
+    let board = unsafe { board.as_mut().unwrap() };
+
+    board.set_current_highlight(Some(highlight));
+}
+
+#[no_mangle]
+pub extern fn sudoku_clear_highlight(board: *mut Board) {
+    let board = unsafe { board.as_mut().unwrap() };
+
+    board.set_current_highlight(None);
+}

@@ -9,6 +9,7 @@ use crate::cell::*;
 
 pub struct Board {
     numbers: Vec<Cell>,
+    current_highlight: Option<u8>,
     callback_ptr: *mut c_void,
     update_callback: Option<extern fn(*mut c_void, u32, u32)>,
 }
@@ -17,9 +18,39 @@ impl Board {
     pub fn empty() -> Self {
         Self {
             numbers: (0..81).map(|_| Cell::new()).collect(),
+            current_highlight: None,
             callback_ptr: null_mut(),
             update_callback: None,
         }
+    }
+
+    pub fn set_current_highlight(&mut self, high_light: Option<u8>) {
+        if self.current_highlight == high_light {
+            return;
+        }
+
+        let mut updates = vec![];
+        for (idx, cell) in self.numbers.iter_mut().enumerate() {
+            if self.current_highlight.is_some() {
+                if self.current_highlight == cell.selected() {
+                    cell.set_states(cell.states() & !CellStates::HIGH_LIGHT);
+                    updates.push(idx);
+                }
+            }
+
+            if high_light.is_some() {
+                if high_light == cell.selected() {
+                    cell.set_states(cell.states() | CellStates::HIGH_LIGHT);
+                    updates.push(idx);
+                }
+            }
+        }
+
+        for i in updates {
+            self.emit_update_cell(i / 9, i % 9);
+        }
+
+        self.current_highlight = high_light;
     }
 
     pub fn set_update_callback(&mut self, cb: extern fn(*mut c_void, u32, u32)) {
@@ -230,6 +261,7 @@ impl Board {
     }
 
     pub fn set(&mut self, row: usize, column: usize, val: Option<u8>) -> bool {
+        // add candidate back if already has value
         if let Some(v) = self.cell(row, column).selected() {
             self.cell_mut(row, column).add_candidate(v);
 
@@ -239,8 +271,19 @@ impl Board {
             }
         }
 
-        self.cell_mut(row, column).set_select(val);
+        // current cell updates
+        let highlight = val.is_some() && self.current_highlight == val;
+        let cell = self.cell_mut(row, column);
+        cell.set_select(val);
 
+        // update highlight status
+        if highlight {
+            cell.set_states(cell.states() | CellStates::HIGH_LIGHT);
+        } else {
+            cell.set_states(cell.states() & !CellStates::HIGH_LIGHT);
+        }
+
+        // set new value
         let mut error_occured = false;
         if let Some(v) = val {
             let cell = self.cell_mut(row, column);
@@ -262,6 +305,7 @@ impl Board {
             cell.set_states(cell.states() & !CellStates::FILLED);
         }
 
+        // emit updates
         self.emit_update_effect_cell(row, column);
         self.emit_update_cell(row, column);
 
@@ -348,8 +392,6 @@ impl fmt::Display for Board {
 mod tests {
     use crate::board::Board;
     use crate::board::CellStates;
-    use std::sync::Arc;
-    use std::os::raw::c_void;
 
     #[test]
     fn test_remove_candidate()
@@ -476,5 +518,28 @@ mod tests {
         }
         assert_eq!(11, pre_filled);
         assert_eq!(70, filled);
+    }
+
+    #[test]
+    fn test_highlight_set() {
+        let mut board = Board::empty();
+        assert_eq!(false, (board.cell(0, 0).states() & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT);
+
+        board.set_current_highlight(Some(1));
+        board.set(0, 0, Some(1));
+        assert_eq!(true, (board.cell(0, 0).states() & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT);
+
+        board.set(0, 0, None);
+        assert_eq!(false, (board.cell(0, 0).states() & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT);
+
+        board.set_current_highlight(None);
+        assert_eq!(false, (board.cell(0, 0).states() & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT);
+
+        board.set(0, 0, Some(2));
+        board.set_current_highlight(Some(2));
+        assert_eq!(true, (board.cell(0, 0).states() & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT);
+
+        board.set_current_highlight(None);
+        assert_eq!(false, (board.cell(0, 0).states() & CellStates::HIGH_LIGHT) == CellStates::HIGH_LIGHT);
     }
 }
