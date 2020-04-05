@@ -110,8 +110,8 @@ impl Cell {
     pub fn candidate_u32(&self) -> u32 {
         let mut flags: u32 = 0;
 
-        for i in 1..=9 {
-            if self.candidate[i] > 0 {
+        for i in 1u32..=9 {
+            if self.candidate[i as usize] > 0 {
                 flags |= 1 << i;
             }
         }

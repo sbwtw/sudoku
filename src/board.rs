@@ -57,30 +57,25 @@ impl Board {
     pub fn generate(&mut self) {
         // step 1. generate correct result
         self.initialize();
-        println!("{}", *self);
         //self.try_resolve();
         while !self.try_resolve() {
             self.initialize();
             println!("Can't resolve, generate new board: \n{}", *self);
         }
+        println!("Initialized:\n{}", *self);
 
         // step 2. randomize
-        self.randomize();
+        let mut rng = rand::thread_rng();
+        let pass_count = rng.gen_range(18, 36);
+        self.randomize(pass_count);
+        println!("Randomized:\n{}", *self);
 
         // step 3. remove some block & ensure can be resolve
-        //let backup = self.numbers.clone();
-        //loop {
-            //self.random_remove(30);
-            //if self.try_resolve() {
-                //break;
-            //}
-
-            //self.numbers = backup.clone();
-        //}
+        // let backup = self.numbers.clone();
+        self.random_remove(50);
+        println!("Blocks Removed:\n{}", *self);
 
         // step 4. fill candidate & cleanup
-        //self.reset_candidate();
-        //self.init_selected_cells();
         self.reset_init_state();
 
         // step 5. emit update all
@@ -99,9 +94,10 @@ impl Board {
         }
     }
 
-    fn randomize(&mut self) {
+    // 在保持解不变的情况化进行随机化处理
+    fn randomize(&mut self, pass_count: usize) {
         let mut rng = rand::thread_rng();
-        for _ in 0..rng.gen_range(18, 36) {
+        for _ in 0..pass_count {
             let row_or_column = rng.gen_bool(0.5);
             let block = rng.gen_range(0, 3);
             let pick1 = rng.gen_range(0, 3);
@@ -154,33 +150,22 @@ impl Board {
         }
     }
 
-    // remove all selected candidate items
-    fn init_selected_cells(&mut self) {
+    fn reset_init_state(&mut self) {
+        // collect all selected
         let selected: Vec<(usize, u8)> = self.numbers.iter().enumerate()
             .filter(|(_, cell)| cell.selected().is_some())
             .map(|(idx, cell)| (idx, cell.selected().unwrap()))
             .collect();
 
+        // re-generate board
+        self.numbers = (0..81).map(|_| Cell::new()).collect();
+
+        // write new data
         for (idx, select) in selected {
-            self.cell_mut(idx / 9, idx % 9).remove_candidate(select);
-        }
+            let cell = self.cell_mut(idx / 9, idx % 9);
+            cell.set_states(cell.states() | CellStates::PRE_FILLED);
 
-        for cell in self.numbers.iter_mut() {
-            if cell.selected().is_some() {
-                cell.reset_candidate();
-                cell.set_states(cell.states() | CellStates::PRE_FILLED);
-            }
-        }
-    }
-
-    fn reset_init_state(&mut self) {
-        let pre_filled: Vec<usize> = self.numbers.iter()
-            .enumerate().filter(|(_, cell)| {
-            cell.states() != CellStates::PRE_FILLED
-        }).map(|(idx, _)| idx).collect();
-
-        for idx in pre_filled {
-            self.set(idx / 9, idx % 9, None);
+            self.set(idx / 9, idx % 9, Some(select));
         }
     }
 
@@ -407,7 +392,7 @@ mod tests {
             board.initialize();
         }
 
-        board.randomize();
+        board.randomize(3);
         assert!(board.try_resolve());
     }
 
@@ -471,7 +456,7 @@ mod tests {
                 assert!(board.numbers[i].states() == CellStates::PRE_FILLED);
             }
         }
-        assert!(pre_filled == 11);
+        assert_eq!(pre_filled, 11);
 
         let mut board = Board::empty();
         board.initialize();
